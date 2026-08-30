@@ -1,0 +1,17 @@
+[Unit]
+Description=Alpaca trading bot - crypto (main.py --config config_crypto.yaml)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/tradingapp
+ExecStart=/opt/tradingapp/.venv/bin/python main.py --config config_crypto.yaml
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

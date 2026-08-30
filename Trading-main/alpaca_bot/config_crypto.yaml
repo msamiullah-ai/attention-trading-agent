@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Crypto-only bot config. Run alongside config.yaml's equity bot as a SEPARATE
+# process (`python main.py --config config_crypto.yaml`) -- never merge these
+# symbols into config.yaml, or both processes would independently trade the
+# same positions under different strategies.
+# ---------------------------------------------------------------------------
+
+symbols:
+  - BTC/USD
+  - ETH/USD
+
+# crypto_momentum is the strategy actually built/tested for crypto (long-only
+# -- Alpaca rejects crypto shorts outright, no margin/borrow available).
+# NOTE: like every strategy in this repo, its randomization-test validation
+# came back "indistinguishable from random" -- no proven edge yet. See
+# scripts/validate_strategy.py.
+strategy: crypto_momentum
+
+strategy_params: {}
+
+timeframe: 1Min
+lookback_bars: 250
+
+data:
+  feed: iex
+
+risk:
+  kelly_multiplier: 0.5
+  max_position_pct: 0.05
+  max_open_positions: 3
+  max_daily_loss_pct: 0.03
+  min_trades_for_kelly: 20
+  fallback_position_pct: 0.02
+  expectancy_window: 20
+
+execution:
+  order_type: market
+  time_in_force: gtc      # crypto requires gtc -- broker.py enforces this anyway
+  limit_slippage_pct: 0.001
+  # Crypto trades 24/7 -- there's no "market open" to require. trader.py
+  # already never gates crypto symbols on this regardless of the setting.
+  require_market_open: false
+
+engine:
+  poll_interval_seconds: 60
