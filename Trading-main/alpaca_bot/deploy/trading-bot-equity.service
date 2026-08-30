@@ -1,0 +1,18 @@
+[Unit]
+Description=Alpaca trading bot - equities (main.py, config.yaml)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/tradingapp
+ExecStart=/opt/tradingapp/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+# Crashes/tracebacks go to the journal (see: journalctl -u trading-bot-equity -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
