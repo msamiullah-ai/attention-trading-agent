@@ -65,6 +65,8 @@ class Trader:
         self.last_signal: dict[str, str] = {}
         self.last_signal_symbol: str | None = None
         self.last_signal_time: str | None = None
+        self._cached_account: AccountSnapshot | None = None
+        self._cached_positions: dict[str, PositionSnapshot] = {}
         log.info(
             "Trader ready | strategy=%s symbols=%s dry_run=%s mode=%s",
             self.strategy.name, ",".join(config.symbols), dry_run, creds.mode,
@@ -73,8 +75,8 @@ class Trader:
     # ------------------------------------------------------------ single pass
 
     def run_cycle(self) -> None:
-        account = self.broker.get_account()
-        gate = self.risk.check_account(account)
+        self._cached_account = self.broker.get_account()
+        gate = self.risk.check_account(self._cached_account)
         if not gate.approved:
             log.warning("RISK HALT: %s", gate.reason)
             return
@@ -87,7 +89,8 @@ class Trader:
                 self.broker.next_market_open(),
             )
 
-        positions = self.broker.get_positions()
+        self._cached_positions = self.broker.get_positions()
+        positions = self._cached_positions
 
         # A trade we were tracking is no longer open -> the bracket's TP/SL
         # (or our own manual close) filled since the last cycle. Reconcile it.
@@ -115,6 +118,8 @@ class Trader:
                 continue
 
             signal = self.strategy.generate_signal(df)
+            if len(self.last_signal) > 1000:
+                self.last_signal.clear()
             self.last_signal[symbol] = signal
             self.last_signal_symbol = symbol
             self.last_signal_time = datetime.now(timezone.utc).isoformat()
@@ -269,11 +274,15 @@ class Trader:
     def _lookup_exit_fill(self, symbol: str, trade: OpenTrade) -> tuple[float, str]:
         """Best-effort exit price/time from Alpaca's own fill record."""
         closing_side = "sell" if trade.side == "long" else "buy"
-        for order in self.broker.get_closed_orders(symbol, limit=5):
+        entry_dt = datetime.fromisoformat(trade.entry_time)
+        for order in self.broker.get_closed_orders(symbol, limit=20):
             side = order.side.value if hasattr(order.side, "value") else order.side
-            if side == closing_side and order.filled_avg_price is not None:
-                filled_at = order.filled_at.isoformat() if order.filled_at else datetime.now(timezone.utc).isoformat()
-                return float(order.filled_avg_price), filled_at
+            if side != closing_side or order.filled_avg_price is None:
+                continue
+            if order.filled_at and order.filled_at < entry_dt:
+                continue
+            filled_at = order.filled_at.isoformat() if order.filled_at else datetime.now(timezone.utc).isoformat()
+            return float(order.filled_avg_price), filled_at
 
         fallback_price = self.data.get_last_price(symbol) or trade.entry_price
         log.warning("Could not find closing fill for %s, using last price %.2f", symbol, fallback_price)
@@ -291,7 +300,9 @@ class Trader:
                     self.run_cycle()
                     if on_cycle is not None:
                         on_cycle()
-                except Exception:  # noqa: BLE001 - a transient API error must not kill the bot
+                except (ConnectionError, TimeoutError, OSError) as e:
+                    log.warning("Cycle failed (transient): %s", e)
+                except Exception:
                     log.exception("Cycle failed; retrying after interval")
                 time.sleep(interval)
         except KeyboardInterrupt:

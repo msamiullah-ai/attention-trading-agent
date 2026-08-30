@@ -24,12 +24,20 @@ from .data import is_crypto_symbol
 from .risk import ExpectancyStats, RiskManager, TradeLog, TradeRecord, compute_expectancy, kelly_fraction
 from .signals import BUY, SELL, Strategy
 
-BARS_PER_YEAR = {
+BARS_PER_YEAR_EQUITY = {
     "1min": 390 * 252,
     "5min": 78 * 252,
     "15min": 26 * 252,
     "1hour": 7 * 252,
     "1day": 252,
+}
+
+BARS_PER_YEAR_CRYPTO = {
+    "1min": 525600,
+    "5min": 105120,
+    "15min": 35040,
+    "1hour": 8760,
+    "1day": 365,
 }
 
 
@@ -48,18 +56,19 @@ class BacktestResult:
     equity_curve: pd.Series = field(repr=False)
 
 
-def _bars_per_year(timeframe: str) -> float:
+def _bars_per_year(timeframe: str, is_crypto: bool = False) -> float:
     key = timeframe.strip().lower()
-    if key not in BARS_PER_YEAR:
+    table = BARS_PER_YEAR_CRYPTO if is_crypto else BARS_PER_YEAR_EQUITY
+    if key not in table:
         raise ValueError(f"Unsupported timeframe {timeframe!r} for Sharpe annualisation")
-    return BARS_PER_YEAR[key]
+    return table[key]
 
 
-def _sharpe_ratio(equity: pd.Series, timeframe: str) -> float:
+def _sharpe_ratio(equity: pd.Series, timeframe: str, is_crypto: bool = False) -> float:
     returns = equity.pct_change().dropna()
     if len(returns) < 2 or returns.std() == 0:
         return 0.0
-    return float(returns.mean() / returns.std() * np.sqrt(_bars_per_year(timeframe)))
+    return float(returns.mean() / returns.std() * np.sqrt(_bars_per_year(timeframe, is_crypto)))
 
 
 def _max_drawdown_pct(equity: pd.Series) -> float:
@@ -206,7 +215,7 @@ def run_backtest(
         starting_equity=starting_equity,
         final_equity=final_equity,
         total_return_pct=(final_equity - starting_equity) / starting_equity,
-        sharpe_ratio=_sharpe_ratio(equity_curve, timeframe),
+        sharpe_ratio=_sharpe_ratio(equity_curve, timeframe, is_crypto=is_crypto_symbol(symbol)),
         max_drawdown_pct=_max_drawdown_pct(equity_curve),
         trades=log.trades,
         expectancy=stats,

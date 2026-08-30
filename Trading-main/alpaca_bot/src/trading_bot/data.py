@@ -64,6 +64,21 @@ _BARS_PER_DAY = {
 }
 
 
+def _validate_bars(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    before = len(df)
+    df = df[df["volume"] > 0]
+    if len(df) > 1:
+        pct_change = df["close"].pct_change().abs()
+        bad = pct_change > 0.25
+        if bad.any():
+            df = df[~bad]
+    if len(df) < before:
+        log.debug("Filtered %d bad bars from %s", before - len(df), symbol)
+    return df
+
+
 def lookback_days_for(timeframe: str, bars_needed: int, buffer_days: int = 5) -> int:
     """Calendar days to request so `bars_needed` bars are almost certainly present."""
     key = timeframe.strip().lower()
@@ -128,8 +143,7 @@ class MarketData:
         return self._split_by_symbol(df, symbols)
 
     def _get_crypto_bars(self, symbols: list[str], timeframe: str, lookback_days: int) -> dict[str, pd.DataFrame]:
-        # Crypto trades 24/7 with no reporting delay, unlike the equity feed.
-        end = datetime.now(timezone.utc)
+        end = datetime.now(timezone.utc) - timedelta(minutes=16)
         start = end - timedelta(days=lookback_days)
 
         request = CryptoBarsRequest(
@@ -149,7 +163,9 @@ class MarketData:
         out: dict[str, pd.DataFrame] = {}
         for symbol in symbols:
             if symbol in df.index.get_level_values("symbol"):
-                out[symbol] = df.xs(symbol, level="symbol").sort_index()
+                bar_df = df.xs(symbol, level="symbol").sort_index()
+                bar_df = _validate_bars(bar_df, symbol)
+                out[symbol] = bar_df
             else:
                 log.warning("No bars for %s", symbol)
         return out

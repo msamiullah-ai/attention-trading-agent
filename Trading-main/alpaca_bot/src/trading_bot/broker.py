@@ -44,9 +44,11 @@ def _normalize_crypto_symbol(raw_symbol: str, asset_class) -> str:
     return raw_symbol  # unrecognised quote currency -- leave as-is rather than guess
 
 
-def _to_close_position_symbol(symbol: str) -> str:
-    """close_position (unlike submit_order) needs crypto without the slash."""
-    return symbol.replace("/", "")
+def _to_alpaca_symbol(symbol: str) -> str:
+    if not is_crypto_symbol(symbol):
+        return symbol
+    base, quote = symbol.split("/", 1)
+    return f"{base}{quote}"
 
 
 @dataclass
@@ -226,7 +228,7 @@ class Broker:
     def close_position(self, symbol: str):
         """Liquidate the whole position in `symbol`."""
         log.info("CLOSING position %s", symbol.upper())
-        return self._client.close_position(_to_close_position_symbol(symbol.upper()))
+        return self._client.close_position(_to_alpaca_symbol(symbol.upper()))
 
     def close_all_positions(self, cancel_orders: bool = True):
         log.warning("CLOSING ALL POSITIONS")

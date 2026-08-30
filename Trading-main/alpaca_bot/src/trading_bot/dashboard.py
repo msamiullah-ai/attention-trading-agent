@@ -26,8 +26,8 @@ def _daily_loss_used_pct(daily_pnl_pct: float, max_daily_loss_pct: float) -> flo
 
 
 def render(trader) -> str:
-    account = trader.broker.get_account()
-    positions = trader.broker.get_positions()
+    account = trader._cached_account
+    positions = trader._cached_positions
     stats: ExpectancyStats = trader.risk.expectancy(strategy=trader.strategy.name, window=_STATS_WINDOW)
     kelly_pct = min(trader.risk.kelly_position_pct(trader.strategy.name), trader.cfg.risk.max_position_pct)
     kelly_label = f"Kelly ({_multiplier_label(trader.cfg.risk.kelly_multiplier)})"

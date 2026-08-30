@@ -9,18 +9,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-# Pairs known to move together regardless of what a short trailing-correlation
-# window happens to compute (e.g. a quiet period can mask a real relationship).
-# Checked in both directions.
-HARDCODED_PAIRS: set[frozenset[str]] = {
-    frozenset({"AAPL", "MSFT"}),
-    frozenset({"GOOGL", "META"}),
-    frozenset({"JPM", "BAC"}),
-    frozenset({"XOM", "CVX"}),
-    frozenset({"AMZN", "GOOGL"}),
-    frozenset({"BTC/USD", "ETH/USD"}),
-}
-
 
 def compute_correlation_matrix(bars_by_symbol: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Pairwise correlation of close-to-close returns across symbols, over
@@ -49,8 +37,6 @@ def is_correlated(
     computed correlation (if available) is at/above `threshold`.
     """
     if symbol_a == symbol_b:
-        return True
-    if frozenset({symbol_a, symbol_b}) in HARDCODED_PAIRS:
         return True
     if corr_matrix is None or corr_matrix.empty:
         return False

@@ -98,6 +98,10 @@ def load_credentials(env_path: Path | None = None) -> Credentials:
     return Credentials(api_key=api_key, secret_key=secret_key, paper=paper)
 
 
+VALID_TIMEFRAMES = {"1min", "5min", "15min", "1hour", "1day"}
+VALID_STRATEGIES = {"ema_rsi", "vwap_mean_reversion", "bollinger_squeeze", "crypto_momentum"}
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load config.yaml into typed dataclasses."""
     path = path or PROJECT_ROOT / "config.yaml"
@@ -108,12 +112,27 @@ def load_config(path: Path | None = None) -> Config:
     if not symbols:
         raise ValueError(f"No symbols configured in {path}")
 
+    strategy = raw.get("strategy", "ema_rsi")
+    if strategy not in VALID_STRATEGIES:
+        raise ValueError(f"Unknown strategy {strategy!r}. Available: {sorted(VALID_STRATEGIES)}")
+
+    timeframe = raw.get("timeframe", "1Min")
+    if timeframe.lower() not in VALID_TIMEFRAMES:
+        raise ValueError(f"Invalid timeframe {timeframe!r}. Use one of {sorted(VALID_TIMEFRAMES)}")
+
+    lookback_bars = int(raw.get("lookback_bars", 250))
+    min_bars = {"ema_rsi": 22, "vwap_mean_reversion": 22, "bollinger_squeeze": 42, "crypto_momentum": 122}
+    if lookback_bars < min_bars.get(strategy, 30):
+        raise ValueError(
+            f"lookback_bars={lookback_bars} too small for {strategy} (needs {min_bars.get(strategy, 30)}+)"
+        )
+
     return Config(
         symbols=symbols,
-        strategy=raw.get("strategy", "ema_rsi"),
+        strategy=strategy,
         strategy_params=raw.get("strategy_params") or {},
-        timeframe=raw.get("timeframe", "1Min"),
-        lookback_bars=int(raw.get("lookback_bars", 250)),
+        timeframe=timeframe,
+        lookback_bars=lookback_bars,
         data=DataConfig(**(raw.get("data") or {})),
         risk=RiskConfig(**(raw.get("risk") or {})),
         execution=ExecutionConfig(**(raw.get("execution") or {})),
