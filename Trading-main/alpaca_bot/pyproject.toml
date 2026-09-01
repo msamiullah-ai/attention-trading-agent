@@ -13,6 +13,8 @@ dependencies = [
     "numpy>=1.26.0,<2.0.0",
     "python-dotenv>=1.0.1,<2.0.0",
     "PyYAML>=6.0.1,<7.0.0",
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn>=0.30.0,<1.0.0",
 ]
 
 [project.optional-dependencies]
