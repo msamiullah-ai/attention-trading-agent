@@ -9,6 +9,25 @@ from __future__ import annotations
 
 import pandas as pd
 
+# Pairs known to move together regardless of what a short trailing-correlation
+# window happens to compute (e.g. a quiet period can mask a real relationship).
+# Checked in both directions.
+#
+# This is a SEED, not the mechanism. Six hand-written pairs cover 9 of a
+# 1000-symbol universe and 6 of its 499,500 possible pairings -- the computed
+# matrix is what actually does the work, and this only backstops it where a
+# quiet window would hide a relationship everyone knows is there. Adding your
+# own belongs in config.yaml (`risk.correlated_pairs`) rather than here, so the
+# list follows the universe you are actually trading.
+HARDCODED_PAIRS: set[frozenset[str]] = {
+    frozenset({"AAPL", "MSFT"}),
+    frozenset({"GOOGL", "META"}),
+    frozenset({"JPM", "BAC"}),
+    frozenset({"XOM", "CVX"}),
+    frozenset({"AMZN", "GOOGL"}),
+    frozenset({"BTC/USD", "ETH/USD"}),
+}
+
 
 def compute_correlation_matrix(bars_by_symbol: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Pairwise correlation of close-to-close returns across symbols, over
@@ -31,12 +50,18 @@ def compute_correlation_matrix(bars_by_symbol: dict[str, pd.DataFrame]) -> pd.Da
 
 
 def is_correlated(
-    symbol_a: str, symbol_b: str, corr_matrix: pd.DataFrame | None = None, threshold: float = 0.75
+    symbol_a: str, symbol_b: str, corr_matrix: pd.DataFrame | None = None,
+    threshold: float = 0.75, extra_pairs: set[frozenset[str]] | None = None,
 ) -> bool:
-    """True if `symbol_a`/`symbol_b` are hardcoded as correlated, or their
-    computed correlation (if available) is at/above `threshold`.
+    """True if the pair is known-correlated, or measures at/above `threshold`.
+
+    `extra_pairs` comes from config so a universe this module has never seen can
+    declare its own relationships without an edit here.
     """
     if symbol_a == symbol_b:
+        return True
+    pair = frozenset({symbol_a, symbol_b})
+    if pair in HARDCODED_PAIRS or (extra_pairs and pair in extra_pairs):
         return True
     if corr_matrix is None or corr_matrix.empty:
         return False
@@ -47,10 +72,11 @@ def is_correlated(
 
 
 def find_correlated_open_position(
-    symbol: str, open_symbols: set[str], corr_matrix: pd.DataFrame | None = None, threshold: float = 0.75
+    symbol: str, open_symbols: set[str], corr_matrix: pd.DataFrame | None = None,
+    threshold: float = 0.75, extra_pairs: set[frozenset[str]] | None = None,
 ) -> str | None:
     """The first already-open symbol correlated with `symbol`, or None."""
     for open_symbol in open_symbols:
-        if is_correlated(symbol, open_symbol, corr_matrix, threshold):
+        if is_correlated(symbol, open_symbol, corr_matrix, threshold, extra_pairs):
             return open_symbol
     return None

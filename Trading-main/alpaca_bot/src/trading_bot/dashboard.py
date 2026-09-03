@@ -26,7 +26,11 @@ def _daily_loss_used_pct(daily_pnl_pct: float, max_daily_loss_pct: float) -> flo
 
 
 def render(trader) -> str:
-    account = trader._cached_account
+    # run_cycle() caches the account so a cycle costs one broker call, but the
+    # dashboard can also be asked to draw before the first cycle has run (and
+    # on a cycle that halted at the risk gate). Fall back to a live fetch
+    # rather than rendering None.
+    account = trader._cached_account or trader.broker.get_account()
     positions = trader._cached_positions
     stats: ExpectancyStats = trader.risk.expectancy(strategy=trader.strategy.name, window=_STATS_WINDOW)
     kelly_pct = min(trader.risk.kelly_position_pct(trader.strategy.name), trader.cfg.risk.max_position_pct)

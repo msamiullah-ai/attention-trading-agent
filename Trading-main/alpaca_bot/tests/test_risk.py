@@ -223,9 +223,47 @@ def test_approved_entry_returns_quantity(rm):
 
 
 def test_rejects_when_share_unaffordable(rm):
-    decision = rm.approve_entry("BRK.A", 700_000.0, "ema_rsi", account(), {})
+    """BRK.A is not fractionable at Alpaca, so an unaffordable share is simply
+    unaffordable -- there is no fractional fallback to rescue it."""
+    decision = rm.approve_entry("BRK.A", 700_000.0, "ema_rsi", account(), {},
+                                fractionable=False)
     assert not decision.approved
     assert "below minimum" in decision.reason
+
+
+def test_fractionable_symbol_is_sized_not_rejected(rm):
+    """The same unaffordable price on a fractionable name must still trade.
+
+    This is the whole point of the change: risk percentages stay valid at any
+    account size instead of the bot silently refusing every entry."""
+    decision = rm.approve_entry("AAPL", 700_000.0, "ema_rsi", account(), {},
+                                fractionable=True)
+    assert decision.approved
+    assert 0 < decision.qty < 1
+
+
+def test_fractional_respects_the_same_risk_fraction(rm):
+    """A fractional slice is not a smaller risk decision, it is the same one."""
+    acct = account()
+    qty = rm.size_position(acct, 1000.0, "ema_rsi", "AAPL", fractionable=True)
+    notional = qty * 1000.0
+    assert notional <= acct.equity * rm.cfg.max_position_pct + 1e-6
+
+
+def test_below_alpaca_fractional_minimum_is_refused(rm):
+    """Under $1 notional Alpaca rejects the order, so refuse it here where the
+    reason lands in our log rather than in an API error."""
+    from trading_bot.broker import AccountSnapshot
+    tiny = AccountSnapshot(equity=5.0, cash=5.0, buying_power=5.0,
+                           last_equity=5.0, blocked=False)
+    assert rm.size_position(tiny, 500.0, "ema_rsi", "AAPL", fractionable=True) == 0.0
+
+
+def test_whole_shares_preferred_when_affordable(rm):
+    """Fractional is a fallback, not a replacement -- an affordable share must
+    still size whole so it keeps its broker-side bracket."""
+    qty = rm.size_position(account(), 10.0, "ema_rsi", "AAPL", fractionable=True)
+    assert qty == int(qty) and qty >= 1
 
 
 def test_approve_entry_sizes_crypto_fractionally(rm):

@@ -22,7 +22,10 @@ from .broker import AccountSnapshot
 from .config import RiskConfig
 from .data import is_crypto_symbol
 from .risk import ExpectancyStats, RiskManager, TradeLog, TradeRecord, compute_expectancy, kelly_fraction
+from .logger import get_logger
 from .signals import BUY, SELL, Strategy
+
+log = get_logger(__name__)
 
 BARS_PER_YEAR_EQUITY = {
     "1min": 390 * 252,
@@ -77,16 +80,50 @@ def _max_drawdown_pct(equity: pd.Series) -> float:
     return float(drawdown.min())
 
 
+def resolve_starting_equity(explicit: float | None = None) -> float:
+    """Whatever the account actually holds, unless told otherwise.
+
+    Imported lazily so `backtest` keeps no import-time dependency on
+    credentials -- a unit test that passes an explicit equity must never touch
+    the network. Raises with an actionable message rather than substituting a
+    default, because a wrong equity does not fail loudly, it quietly changes
+    every sizing decision in the run.
+    """
+    if explicit is not None:
+        return float(explicit)
+    try:
+        from .broker import Broker
+        from .config import load_credentials
+        equity = float(Broker(load_credentials()).get_account().equity)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "starting_equity was not given and the live account could not be "
+            f"read ({exc}). Pass starting_equity=... explicitly."
+        ) from exc
+    if equity <= 0:
+        raise RuntimeError(f"account equity is {equity}; nothing to backtest")
+    log.info("backtest starting equity read from the live account: $%.2f", equity)
+    return equity
+
+
 def run_backtest(
     strategy: Strategy,
     df: pd.DataFrame,
     symbol: str,
     risk_config: RiskConfig,
     timeframe: str = "1Day",
-    starting_equity: float = 10_000.0,
+    starting_equity: float | None = None,
     slippage_pct: float = 0.0002,
     commission_per_trade: float = 0.0,
 ) -> BacktestResult:
+    # No invented starting balance. A magic 10_000 default silently decides how
+    # the whole run behaves: at that equity a 2% slice is $200, which cannot buy
+    # one share of a $765 stock, so every entry is refused and the backtest
+    # reports a clean, wrong "0 trades". Reading the real account instead means
+    # the backtest models the account you actually have, whatever size it is.
+    if starting_equity is None:
+        starting_equity = resolve_starting_equity()
+
     if len(df) <= strategy.min_bars:
         raise ValueError(
             f"Need more than {strategy.min_bars} bars for {strategy.name}, got {len(df)}"

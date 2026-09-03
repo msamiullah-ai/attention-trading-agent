@@ -21,7 +21,7 @@ import matplotlib  # noqa: E402
 matplotlib.use("Agg")  # headless: never try to open a GUI window
 import matplotlib.pyplot as plt  # noqa: E402
 
-from trading_bot.backtest import run_backtest  # noqa: E402
+from trading_bot.backtest import resolve_starting_equity, run_backtest  # noqa: E402
 from trading_bot.config import load_config, load_credentials  # noqa: E402
 from trading_bot.data import MarketData, lookback_days_for  # noqa: E402
 from trading_bot.logger import setup_logging  # noqa: E402
@@ -67,7 +67,7 @@ def save_equity_curve(symbol: str, strategy_name: str, equity_curve) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Backtest a strategy against real Alpaca history")
     parser.add_argument("--days", type=int, default=180, help="Calendar days of history")
-    parser.add_argument("--cash", type=float, default=10_000.0, help="Starting equity per symbol")
+    parser.add_argument("--cash", type=float, default=None, help="Starting equity per symbol (default: your live account equity)")
     parser.add_argument("--symbols", type=str, default=None, help="Comma-separated override of config.yaml symbols")
     parser.add_argument("--strategy", type=str, default=None, help="Override config.yaml strategy name")
     args = parser.parse_args()

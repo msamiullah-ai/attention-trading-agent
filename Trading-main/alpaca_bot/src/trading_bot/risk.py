@@ -19,6 +19,11 @@ from .logger import get_logger
 
 log = get_logger(__name__)
 
+# Alpaca's minimum notional for a fractional equity order. Below this the
+# order is rejected, so refusing here keeps the reason in our log instead of
+# in an API error.
+MIN_FRACTIONAL_NOTIONAL = 1.0
+
 CSV_FIELDS = [
     "symbol", "strategy", "side", "qty", "entry_price", "exit_price",
     "stop_loss", "take_profit", "entry_time", "exit_time", "pnl", "r_multiple",
@@ -267,7 +272,8 @@ class RiskManager:
         raw = kelly_fraction(stats.win_rate, stats.reward_risk_ratio)
         return max(0.0, raw) * self.cfg.kelly_multiplier
 
-    def size_position(self, account: AccountSnapshot, price: float, strategy: str, symbol: str) -> float:
+    def size_position(self, account: AccountSnapshot, price: float, strategy: str,
+                      symbol: str, fractionable: bool = True) -> float:
         """Quantity for a new position, 0 if nothing affordable.
 
         Crypto sizes fractionally (e.g. 0.0031 BTC) since Alpaca trades it
@@ -282,7 +288,26 @@ class RiskManager:
         target_dollars = min(account.equity * fraction, account.buying_power)
         if is_crypto_symbol(symbol):
             return round(target_dollars / price, 6)
-        return float(int(target_dollars // price))
+
+        whole = float(int(target_dollars // price))
+        # `fractionable` is passed in rather than inferred: it is a per-asset
+        # fact only the broker knows (BRK.A is not fractionable at any price),
+        # and guessing it means submitting orders Alpaca will reject.
+        if whole >= 1.0 or not self.cfg.allow_fractional_equity or not fractionable:
+            return whole
+
+        # Whole-share sizing rounds this to nothing, which is how a small
+        # account silently stops trading: 2% of $1,000 is $20, one AAPL share
+        # is $258, so every entry is refused with no error anywhere. Sizing
+        # fractionally instead lets the same risk percentages hold at any
+        # equity -- $20 buys 0.0775 AAPL, which is still exactly 2%.
+        #
+        # The cost is real and handled in broker.submit_order: Alpaca rejects
+        # bracket orders on fractional quantities, so these positions get the
+        # same manual stop/target watching crypto already uses.
+        if target_dollars < MIN_FRACTIONAL_NOTIONAL:
+            return 0.0                    # below Alpaca's $1 fractional minimum
+        return round(target_dollars / price, 6)
 
     # ----------------------------------------------------------- entry gate
 
@@ -293,6 +318,7 @@ class RiskManager:
         strategy: str,
         account: AccountSnapshot,
         positions: dict[str, PositionSnapshot],
+        fractionable: bool = True,
     ) -> Decision:
         if symbol in positions:
             return Decision(False, reason=f"already holding {symbol}")
@@ -306,8 +332,12 @@ class RiskManager:
         if not pause.approved:
             return pause
 
-        qty = self.size_position(account, price, strategy, symbol)
-        min_qty = 1e-6 if is_crypto_symbol(symbol) else 1.0
+        qty = self.size_position(account, price, strategy, symbol, fractionable)
+        # A fractional equity is allowed the same floor as crypto; without this
+        # the gate would reject the very quantities size_position just produced.
+        fractional_ok = is_crypto_symbol(symbol) or (
+            self.cfg.allow_fractional_equity and fractionable)
+        min_qty = 1e-6 if fractional_ok else 1.0
         if qty < min_qty:
             return Decision(
                 False,

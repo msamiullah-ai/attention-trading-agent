@@ -5,3 +5,13 @@ python-dotenv>=1.0.1,<2.0.0
 PyYAML>=6.0.1,<7.0.0
 fastapi>=0.115.0,<1.0.0
 uvicorn>=0.30.0,<1.0.0
+
+# Required, not optional: mcp_broker.py imports these at module level and the
+# test suite imports mcp_broker, so a missing `mcp` fails collection rather
+# than one test. It was absent while CI claimed the suite runs offline.
+mcp>=1.2.0,<3.0.0
+requests>=2.31.0,<3.0.0
+
+# Optional: only needed when TRADING_BOT_ADVISOR=anthropic. The bot imports it
+# lazily and runs rules-only if it is absent, so this is safe to omit.
+anthropic>=0.40.0,<2.0.0

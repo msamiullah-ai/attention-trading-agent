@@ -82,3 +82,40 @@ def test_breakout_strategies_allow_bull_and_bear_not_sideways():
 def test_unknown_strategy_is_never_gated():
     assert strategy_allows_regime("some_future_strategy", SIDEWAYS) is True
     assert strategy_allows_regime("some_future_strategy", BULL) is True
+
+
+# --------------------------------------------------------------------------
+# vectorised regime detection must be identical, not merely similar
+# --------------------------------------------------------------------------
+
+def _trending_df(n=300):
+    import numpy as np
+    idx = pd.date_range("2024-01-02", periods=n, freq="1D", tz="UTC")
+    rng = np.random.default_rng(7)
+    # A random walk with drift reversals, so all three regimes actually occur.
+    steps = rng.normal(0, 1, n) + np.concatenate([
+        np.full(n // 3, 0.8), np.full(n // 3, -0.8), np.full(n - 2 * (n // 3), 0.05)])
+    close = 100 + np.cumsum(steps)
+    return pd.DataFrame({"open": close, "high": close + 1.0,
+                         "low": close - 1.0, "close": close,
+                         "volume": [1000] * n}, index=idx)
+
+
+def test_series_matches_scalar_bar_for_bar():
+    """The whole justification for the fast path: identical, not approximate."""
+    from trading_bot.regime import detect_regime, detect_regime_series
+    df = _trending_df()
+    fast = detect_regime_series(df)
+    for i in range(len(df)):
+        assert fast[i] == detect_regime(df.iloc[: i + 1]), f"mismatch at bar {i}"
+
+
+def test_series_covers_more_than_one_regime():
+    """A test that only ever sees SIDEWAYS would pass while proving nothing."""
+    from trading_bot.regime import detect_regime_series
+    assert len(set(detect_regime_series(_trending_df()))) > 1
+
+
+def test_series_handles_short_input():
+    from trading_bot.regime import detect_regime_series
+    assert detect_regime_series(_trending_df(5)) == ["SIDEWAYS"] * 5

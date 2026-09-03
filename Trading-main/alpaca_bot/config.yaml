@@ -1034,7 +1034,7 @@ symbols:
 
 # Which strategy to run. Must match a key in signals.py REGISTRY:
 #   ema_rsi | vwap_mean_reversion | bollinger_squeeze | crypto_momentum
-strategy: ema_rsi
+strategy: opening_range_breakout
 
 # Parameters passed to the strategy constructor. See signals.py for each
 # strategy's full parameter list and defaults.
@@ -1066,8 +1066,49 @@ risk:
   fallback_position_pct: 0.02
   # Window of recent trades checked for the negative-expectancy pause.
   expectancy_window: 20
+  # Size equities fractionally when a whole share costs more than the risk
+  # budget allows, so the same percentages hold at any account size. Without
+  # it a small account cannot open most positions and simply never trades.
+  # Fractional positions cannot carry a broker-side bracket, so they are
+  # protected by the in-process stop/target watch instead.
+  allow_fractional_equity: true
+  # Measured correlation at/above this blocks opening a second, near-duplicate
+  # bet. Lower = stricter (fewer simultaneous positions in related names).
+  correlation_threshold: 0.75
+  # Extra pairs treated as correlated regardless of what the trailing window
+  # measures, merged with the built-in seed list in correlation.py. Six built-in
+  # pairs cannot cover a 1000-symbol universe; add the ones that matter to yours.
+  correlated_pairs: []
+  #  - ["KO", "PEP"]
+  #  - ["V", "MA"]
+  #  - ["DAL", "UAL"]
 
 execution:
+  # How orders reach Alpaca.
+  #   rest = alpaca-py TradingClient (direct HTTPS)
+  #   mcp  = Alpaca's MCP server, launched as a subprocess via uvx
+  # MCPBroker is a drop-in for Broker, so this only swaps the transport. It also
+  # unlocks news and corporate-action retrieval for the agent layer, which the
+  # REST client has no endpoint for -- with transport: rest the LLM reviewer
+  # sees the trade and nothing else.
+  transport: mcp
+  # Who gets a position slot when more symbols qualify than max_open_positions
+  # allows.
+  #   none = the first to qualify while scanning `symbols` top to bottom. That
+  #          makes a symbol's position in this file a hidden input: measured on
+  #          a live run the three slots went to indices 649, 871 and 892, and
+  #          every symbol after 892 was refused whatever it was showing.
+  #   drr  = Deficit Round Robin (Shreedhar & Varghese, SIGCOMM 1995). Ranks on
+  #          signal agreement, and a symbol repeatedly passed over accrues
+  #          credit until it wins. Merit first, no starvation.
+  scheduler: drr
+  # How capital is split between the equity and the options side.
+  #   none    = each sizes against full equity independently. Run both
+  #             processes and together they can commit past 100%.
+  #   dynamic = allocation.decide() gives each a ceiling, from the regime,
+  #             trend strength, volatility and each side's recent form.
+  #             It can only ever give a side LESS than it has today.
+  allocator: dynamic
   order_type: market      # market | limit
   time_in_force: day      # day | gtc
   # Limit price offset from last quote, only used when order_type: limit.

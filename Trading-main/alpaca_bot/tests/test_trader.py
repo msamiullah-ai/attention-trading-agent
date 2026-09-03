@@ -35,6 +35,8 @@ class FakeOrder:
 class FakeBroker:
     def __init__(self, market_open: bool = True):
         self.market_open = market_open
+        self.fractionable = True
+        self.shorting = True
         self.positions: dict[str, PositionSnapshot] = {}
         self.closed_orders: dict[str, list[FakeOrder]] = {}
         self.submitted_orders: list[dict] = []
@@ -45,6 +47,14 @@ class FakeBroker:
 
     def is_market_open(self) -> bool:
         return self.market_open
+
+    def shorting_enabled(self) -> bool:
+        return self.shorting
+
+    def is_fractionable(self, symbol: str) -> bool:
+        # Default True so existing tests keep sizing the way they always have;
+        # a test that cares about the non-fractionable path sets this False.
+        return self.fractionable
 
     def next_market_open(self):
         return datetime(2026, 1, 1, tzinfo=timezone.utc)

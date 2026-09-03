@@ -13,6 +13,9 @@ Endpoints
     GET /api/signals           -> current BUY/SELL/HOLD per configured symbol
     GET /api/equity-curve      -> cumulative realized P/L over closed trades
     GET /api/risk-metrics      -> expectancy stats + Kelly sizing
+    GET /api/options/positions -> held contracts: strike, expiry, DTE, collateral
+    GET /api/options/cycles    -> the overlay's decision log, refusals included
+    GET /api/options/config    -> the limits the overlay enforces
 
 Design notes
     - Every route is read-only. This process never constructs a Trader and
@@ -42,13 +45,25 @@ from trading_bot.data import MarketData, lookback_days_for  # noqa: E402
 from trading_bot.risk import ExpectancyStats, RiskManager  # noqa: E402
 from trading_bot.signals import Strategy, build_strategy  # noqa: E402
 
+from trading_bot.options import parse_occ, days_to_expiry, moneyness, is_itm  # noqa: E402
+from trading_bot.options_trader import load_options_config, read_reports  # noqa: E402
+
+from trading_bot import allocation
+from trading_bot.advisor_memory import AdvisorMemory
+from trading_bot.config import load_agent_settings
 from api_types import (  # noqa: E402
     AccountJson,
     EquityPointJson,
     HealthJson,
     PositionJson,
     RiskMetricsJson,
+    OptionPlanJson,
+    OptionPositionJson,
+    OptionsConfigJson,
     SignalsJson,
+    AdvisorVerdictJson,
+    AdvisorStatsJson,
+    AllocationJson,
 )
 
 app = FastAPI(title="alpaca-bot read-only API", version="0.1.0")
@@ -143,7 +158,17 @@ class Runtime:
     broker: Broker
     data: MarketData
     strategy: Strategy
-    risk: RiskManager
+
+    def fresh_risk(self) -> RiskManager:
+        """A RiskManager reading the trade log as it is right now.
+
+        TradeLog loads state/trades.csv once in its constructor, so a cached
+        RiskManager would pin the equity curve and expectancy stats to
+        whatever had closed when this process served its first request. The
+        bot appends to that CSV from its own process, so the API has to
+        re-read it per request to see new trades.
+        """
+        return RiskManager(self.cfg.risk)
 
 
 _runtime: Runtime | None = None
@@ -160,7 +185,6 @@ def get_runtime() -> Runtime:
             broker=Broker(creds),
             data=MarketData(creds, feed=cfg.data.feed),
             strategy=build_strategy(cfg.strategy, cfg.strategy_params),
-            risk=RiskManager(cfg.risk),
         )
     return _runtime
 
@@ -197,18 +221,167 @@ def signals(rt: Runtime = Depends(get_runtime)) -> SignalsJson:
 
 @app.get("/api/equity-curve", response_model=list[EquityPointJson])
 def equity_curve(rt: Runtime = Depends(get_runtime)) -> list[EquityPointJson]:
-    return trades_to_curve(rt.risk)
+    return trades_to_curve(rt.fresh_risk())
 
 
 @app.get("/api/risk-metrics", response_model=RiskMetricsJson)
 def risk_metrics(rt: Runtime = Depends(get_runtime)) -> RiskMetricsJson:
     window = 50  # same window the terminal dashboard uses
-    stats = rt.risk.expectancy(strategy=rt.cfg.strategy, window=window)
+    risk = rt.fresh_risk()
+    stats = risk.expectancy(strategy=rt.cfg.strategy, window=window)
     return stats_to_json(
         stats,
-        rt.risk.kelly_position_pct(rt.cfg.strategy),
+        risk.kelly_position_pct(rt.cfg.strategy),
         rt.cfg.strategy,
         window,
+    )
+
+
+# --------------------------------------------------------------- options
+# The overlay writes state/options_cycles.jsonl and these read it. The equity
+# routes recompute signals from bars on each request, which cannot work here:
+# an option chain fetch per symbol per request is far too slow to serve a
+# dashboard, and it would put a second consumer on the same rate limit the bot
+# is already using.
+
+
+def option_position_to_json(symbol: str, position, spot: float | None) -> OptionPositionJson:
+    """Shape one held contract for the UI.
+
+    `collateral` is the field a share-shaped view has no room for and the one
+    that matters: a short $92 put is a $9,200 obligation while its market value
+    reads as $120.
+    """
+    occ = parse_occ(symbol)
+    qty = position.qty
+    short = qty < 0
+    collateral = (occ.collateral(int(abs(qty)))
+                  if (short and occ.right == "put") else 0.0)
+    mny = moneyness(occ, spot) if spot else None
+    return OptionPositionJson(
+        symbol=symbol, underlying=occ.underlying, right=occ.right,
+        strike=occ.strike, expiry=occ.expiry,
+        dte=days_to_expiry(occ.expiry, datetime.now().date()),
+        qty=round(qty, 4), side="short" if short else "long",
+        market_value=round(position.market_value, 2),
+        unrealized_pl=round(position.unrealized_pl, 2),
+        collateral=round(collateral, 2),
+        moneyness_pct=round(mny * 100, 2) if mny is not None else None,
+        itm=is_itm(occ, spot) if spot else None,
+    )
+
+
+@app.get("/api/options/positions", response_model=list[OptionPositionJson])
+def option_positions(rt: Runtime = Depends(get_runtime)) -> list[OptionPositionJson]:
+    """Held option contracts.
+
+    Identified by whether the symbol PARSES as OCC, not by an asset-class
+    field, because the broker reports that inconsistently across endpoints and
+    a share position mistaken for a contract would be shown against 100x the
+    wrong collateral.
+    """
+    out: list[OptionPositionJson] = []
+    for symbol, position in rt.broker.get_positions().items():
+        occ = parse_occ(symbol)
+        if occ is None:
+            continue
+        try:
+            spot = rt.data.get_last_price(occ.underlying)
+        except Exception:  # noqa: BLE001 - an unquoted name is unknown, not fatal
+            spot = None
+        out.append(option_position_to_json(symbol, position, spot))
+    return sorted(out, key=lambda o: (o.moneyness_pct is None, o.moneyness_pct or 0))
+
+
+@app.get("/api/options/cycles", response_model=list[OptionPlanJson])
+def option_cycles(limit: int = 25) -> list[OptionPlanJson]:
+    """The overlay's decision log, oldest first.
+
+    Includes cycles where nothing traded, deliberately. Those are most of them,
+    and they carry the reason -- "bearish signal with no shares; level 1 has no
+    bearish option expression" -- which is the difference between a dashboard
+    that shows what the agent did and one that shows what it decided.
+    """
+    return [OptionPlanJson(
+        ts=r.get("ts", ""), summary=r.get("summary", ""),
+        equity=r.get("equity", 0.0),
+        collateral_posted=r.get("collateral_posted", 0.0),
+        open_options=r.get("open_options", 0),
+        plans=r.get("plans", []), orders=r.get("orders", []),
+        skipped=r.get("skipped", []),
+    ) for r in read_reports(limit=limit)]
+
+
+@app.get("/api/advisor/verdicts", response_model=list[AdvisorVerdictJson])
+def advisor_verdicts(limit: int = 30) -> list[AdvisorVerdictJson]:
+    """The LLM's own review history, newest first.
+
+    Read from the ledger the bot writes rather than recomputed: these are
+    judgements already made, and re-asking the model what it thinks now would
+    show something the bot never acted on.
+    """
+    mem = AdvisorMemory()
+    rows = mem._rows[-limit:][::-1]
+    return [AdvisorVerdictJson(
+        ts=v.ts, symbol=v.symbol, side=v.side, action=v.action,
+        reason=v.reason, price_at=v.price_at,
+        move_pct=v.move_pct, correct=v.correct,
+    ) for v in rows]
+
+
+@app.get("/api/advisor/stats", response_model=AdvisorStatsJson)
+def advisor_stats() -> AdvisorStatsJson:
+    """Is the reviewer worth its latency? A number, not an opinion."""
+    mem = AdvisorMemory()
+    overall_rate, overall_n = mem.accuracy()
+    veto_rate, veto_n = mem.accuracy("veto")
+    settings = load_agent_settings()
+    return AdvisorStatsJson(
+        overall_rate=round(overall_rate, 4), overall_n=overall_n,
+        veto_rate=round(veto_rate, 4), veto_n=veto_n,
+        pending=sum(1 for v in mem._rows if v.correct is None),
+        model=settings.model or "(none)",
+    )
+
+
+@app.get("/api/allocation", response_model=AllocationJson)
+def current_allocation(rt: Runtime = Depends(get_runtime)) -> AllocationJson:
+    """The equity/options split as it stands, recomputed from live account state.
+
+    Recomputed rather than read from a log because it is a function of right
+    now -- equity, options level, regime -- and a stale split shown as current
+    is worse than none.
+    """
+    cfg = load_config()
+    account = rt.broker.get_account()
+    # options_level exists on MCPBroker only; the REST client has no endpoint
+    # for it, and guessing a level is the one thing the options path refuses
+    # to do anywhere else.
+    level = (rt.broker.options_level()
+             if hasattr(rt.broker, "options_level") else None)
+    a = allocation.decide(account.equity, options_level=level)
+    return AllocationJson(
+        equity_budget=round(a.equity_budget, 2),
+        options_budget=round(a.options_budget, 2),
+        reserve=round(a.reserve, 2),
+        regime=a.regime, reason=a.reason,
+        enabled=cfg.execution.allocator == "dynamic",
+    )
+
+
+@app.get("/api/options/config", response_model=OptionsConfigJson)
+def options_config() -> OptionsConfigJson:
+    """The limits the overlay enforces, so the UI can render a cap rather than
+    an unexplained refusal. max_collateral_pct is PERCENT, matching every other
+    *_pct field in this contract."""
+    c = load_options_config()
+    return OptionsConfigJson(
+        enabled=c.enabled, target_delta=c.target_delta,
+        delta_min=c.delta_min, delta_max=c.delta_max,
+        max_collateral_pct=round(c.max_collateral_pct * 100, 2),
+        max_positions=c.max_positions,
+        max_orders_per_day=c.max_orders_per_day,
+        min_credit=c.min_credit,
     )
 
 

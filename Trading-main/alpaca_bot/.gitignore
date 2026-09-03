@@ -1,12 +1,66 @@
+# Environment variables
 .env
+.env.*
+
+# Virtual environments
 .venv/
 venv/
+env/
+
+# Python cache / compiled files
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Testing
 .pytest_cache/
-logs/*.log
-state/*.json
-state/*.csv
+.coverage
+.coverage.*
+htmlcov/
+
+# Logs
+logs/
+*.log
+
+# Application state / generated data. Written every cycle, so committing it
+# means a conflict for whoever pulls next, and the contents describe one
+# machine's account rather than anything about the code.
+state/*
+!state/.gitkeep
+
+# Backups and captured fixtures left behind by debugging.
+*.polluted
+*.fixtures
+*.backup-*
+
+# Backtests / generated output
 backtests/
+
+# IDE / editors
 .idea/
 .vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Type checking / linting caches
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

@@ -103,3 +103,56 @@ def test_find_correlated_open_position_none_when_nothing_correlated():
 
 def test_find_correlated_open_position_empty_positions():
     assert find_correlated_open_position("AAPL", set()) is None
+
+
+# --------------------------------------------------------------------------
+# pairs and threshold must come from config, not from source edits
+# --------------------------------------------------------------------------
+
+def test_extra_pairs_from_config_are_honoured():
+    """A universe declares its own relationships without editing this module."""
+    from trading_bot.correlation import is_correlated
+    extra = {frozenset({"KO", "PEP"})}
+    assert not is_correlated("KO", "PEP")
+    assert is_correlated("KO", "PEP", extra_pairs=extra)
+
+
+def test_extra_pairs_are_direction_agnostic():
+    from trading_bot.correlation import is_correlated
+    extra = {frozenset({"DAL", "UAL"})}
+    assert is_correlated("UAL", "DAL", extra_pairs=extra)
+
+
+def test_builtin_seed_still_applies_alongside_extras():
+    """Extras supplement the seed list, they do not replace it."""
+    from trading_bot.correlation import is_correlated
+    assert is_correlated("AAPL", "MSFT", extra_pairs={frozenset({"KO", "PEP"})})
+
+
+def test_threshold_is_respected_from_the_caller():
+    import pandas as pd
+    from trading_bot.correlation import is_correlated
+    m = pd.DataFrame({"A": [1.0, 0.8], "B": [0.8, 1.0]}, index=["A", "B"])
+    assert is_correlated("A", "B", m, threshold=0.75)
+    assert not is_correlated("A", "B", m, threshold=0.95)
+
+
+def test_trader_passes_the_configured_threshold_and_pairs():
+    """The wiring, not just the function: a config value that nothing reads is
+    the exact bug this change fixes."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from test_trader import make_config, make_creds, FakeBroker, FakeMarketData, FakeStrategy, make_df
+    from trading_bot.risk import RiskManager, TradeLog
+    from trading_bot.signals import BUY
+    from trading_bot.trader import Trader
+
+    cfg = make_config()
+    cfg.risk.correlated_pairs = [["KO", "PEP"], ["BAD"]]      # one valid, one malformed
+    t = Trader(cfg, make_creds(), broker=FakeBroker(),
+               data=FakeMarketData(bars={"AAPL": make_df()}),
+               risk=RiskManager(cfg.risk, trade_log=TradeLog(in_memory=True)),
+               strategy=FakeStrategy(signal=BUY))
+    assert frozenset({"KO", "PEP"}) in t._extra_correlated_pairs
+    assert len(t._extra_correlated_pairs) == 1               # malformed entry dropped

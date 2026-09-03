@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# Options overlay. Read by main_options.py; the equity bot never loads this.
+#
+# Symbols, strategy and timeframe still come from config.yaml -- the overlay
+# takes its DIRECTION from the same signal the equity bot uses, and only the
+# expression differs. Keeping them in one place means the two cannot disagree
+# about what they are trading.
+# ---------------------------------------------------------------------------
+
+enabled: true
+
+# Which expiry to write. null takes whatever the chain offers, which on most
+# single names is the nearest Friday weekly.
+#
+# Tenor is the single biggest choice here and it is not free. Short-dated
+# collects premium fastest and carries the most gamma: near expiry, delta moves
+# quickest, so a small move in the underlying moves the position a lot. Longer
+# tenors decay more slowly and behave more calmly. Cboe's own indices put
+# monthly put-writing (PUT, 6.6%/yr) ahead of weekly (WPUT, 5.6%/yr) over
+# 2006-2015, so shorter is not automatically better.
+expiry: null
+
+# --- contract selection ----------------------------------------------------
+#
+# Delta is the market's own estimate of the probability of finishing in the
+# money, so it is the honest way to say "how much assignment risk". 0.20 means
+# roughly a one-in-five chance of being assigned, which is the usual band for
+# premium selling: enough credit to be worth the trade, far enough out that
+# most expire worthless.
+#
+# The band is a LIMIT, not a target. Being comfortably inside it is not a
+# reason to move closer to the edge.
+target_delta: 0.20
+delta_min: 0.15
+delta_max: 0.35
+
+# --- risk ------------------------------------------------------------------
+#
+# These are the limits that actually bind on a short-premium book, and they are
+# not the ones in config.yaml. RiskConfig sizes shares from a Kelly fraction of
+# notional and prices risk from a stop distance; a cash-secured put has
+# neither. Its exposure is strike x 100 of cash that must be posted, while the
+# premium is a few dollars, so the equity model would size a $22,600 obligation
+# as though it were a $100 position.
+
+# Share of equity that may be posted as collateral against short puts. Held at
+# half deliberately: the remainder is what lets an assignment be absorbed
+# without a forced liquidation.
+max_collateral_pct: 0.50
+
+# Concurrent option positions.
+max_positions: 3
+
+# Contracts per order. One, because each contract is a full strike x 100
+# obligation -- position size here is measured in obligations, not in shares.
+max_contracts_per_order: 1
+
+# A runaway detector, not a trading budget. Reaching it means something is
+# looping, not that the day went well.
+max_orders_per_day: 10
+
+# Minimum credit per share, so 0.20 is $20 a contract. Below this the premium
+# does not pay for the obligation: eight cents against $22,600 of posted
+# collateral is a fee for accepting risk, not income.
+min_credit: 0.20
+
+# How far through the bid to price a sell limit. Paper only fills marketable
+# orders -- a sell at mid sits there all session. This is the most common
+# reason an options bot trades nothing for a week and logs no error.
+limit_offset: 0.02

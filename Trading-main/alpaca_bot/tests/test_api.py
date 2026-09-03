@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from api import (
+    Runtime,
     account_to_json,
     app,
     pick_signal,
@@ -131,6 +132,28 @@ def test_equity_curve_is_cumulative_and_date_formatted():
     curve = trades_to_curve(risk)  # type: ignore[arg-type]
     assert [point.equity for point in curve] == [100.0, 75.0]
     assert [point.date for point in curve] == ["08/30", "08/31"]
+
+
+# ----------------------------------------------------------------- freshness
+
+
+def test_fresh_risk_rereads_trade_log_per_call():
+    """The bot appends closed trades to state/trades.csv from its own process.
+
+    TradeLog only reads that file in its constructor, so caching one
+    RiskManager on the Runtime would freeze the equity curve and expectancy
+    at whatever had closed when the first request came in.
+    """
+    runtime = Runtime(
+        creds=SimpleNamespace(mode="PAPER"),  # type: ignore[arg-type]
+        cfg=SimpleNamespace(risk=SimpleNamespace()),  # type: ignore[arg-type]
+        broker=SimpleNamespace(),  # type: ignore[arg-type]
+        data=SimpleNamespace(),  # type: ignore[arg-type]
+        strategy=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+    first, second = runtime.fresh_risk(), runtime.fresh_risk()
+    assert first is not second
+    assert first.trade_log is not second.trade_log
 
 
 # ------------------------------------------------------------------ routes

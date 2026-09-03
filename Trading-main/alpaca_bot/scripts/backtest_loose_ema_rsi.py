@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from trading_bot.backtest import run_backtest  # noqa: E402
+from trading_bot.backtest import resolve_starting_equity, run_backtest  # noqa: E402
 from trading_bot.config import load_config, load_credentials  # noqa: E402
 from trading_bot.data import MarketData, lookback_days_for  # noqa: E402
 from trading_bot.logger import setup_logging  # noqa: E402
@@ -76,7 +76,8 @@ def randomization_check(strategy, df, symbol, risk_config, timeframe, cash, tria
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare loose vs strict ema_rsi, plus a randomization check")
     parser.add_argument("--days", type=int, default=180)
-    parser.add_argument("--cash", type=float, default=10_000.0)
+    parser.add_argument("--cash", type=float, default=None,
+                        help="Starting equity (default: your live account equity)")
     parser.add_argument("--symbols", type=str, default=None)
     parser.add_argument("--trials", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)

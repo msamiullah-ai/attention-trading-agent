@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from trading_bot.backtest import run_backtest  # noqa: E402
+from trading_bot.backtest import resolve_starting_equity, run_backtest  # noqa: E402
 from trading_bot.config import load_config, load_credentials  # noqa: E402
 from trading_bot.data import MarketData, lookback_days_for  # noqa: E402
 from trading_bot.logger import setup_logging  # noqa: E402
@@ -83,7 +83,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Randomization test for a strategy's entry timing")
     parser.add_argument("--days", type=int, default=365)
     parser.add_argument("--trials", type=int, default=20)
-    parser.add_argument("--cash", type=float, default=10_000.0)
+    parser.add_argument("--cash", type=float, default=None,
+                        help="Starting equity (default: your live account equity)")
     parser.add_argument("--symbols", type=str, default=None)
     parser.add_argument("--strategy", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -117,7 +118,8 @@ def main() -> int:
             print(f"{symbol:<8}{len(df):>7}  (not enough bars, need > {strategy.min_bars})")
             continue
 
-        real_result = run_backtest(strategy, df, symbol, config.risk, timeframe=config.timeframe, starting_equity=args.cash)
+        args.cash = resolve_starting_equity(args.cash)
+    real_result = run_backtest(strategy, df, symbol, config.risk, timeframe=config.timeframe, starting_equity=args.cash)
         n_long = sum(1 for t in real_result.trades if t.side == "long")
         n_short = sum(1 for t in real_result.trades if t.side == "short")
 

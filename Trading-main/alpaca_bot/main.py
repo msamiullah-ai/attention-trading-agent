@@ -24,6 +24,9 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from trading_bot.config import PROJECT_ROOT, load_config, load_credentials  # noqa: E402
 from trading_bot.dashboard import print_dashboard  # noqa: E402
 from trading_bot.logger import get_logger, setup_logging  # noqa: E402
+from trading_bot import allocation
+from trading_bot.broker import Broker
+from trading_bot.mcp_broker import MCPBroker, MCPError
 from trading_bot.trader import Trader  # noqa: E402
 
 log = get_logger("main")
@@ -58,7 +61,40 @@ def main() -> int:
             print("Aborted.")
             return 1
 
-    trader = Trader(config, creds, dry_run=args.dry_run)
+    # Transport comes from config.yaml (execution.transport), not a flag, so a
+    # second bot instance run with --config picks its own without extra
+    # arguments -- the same way symbols and strategy already work.
+    #
+    # MCPBroker is a drop-in for Broker: same methods, same return types. It is
+    # built here rather than inside Trader because startup can fail (the server
+    # is a subprocess), and a clear message beats a traceback out of a
+    # constructor.
+    broker = None
+    if config.execution.transport == "mcp":
+        try:
+            broker = MCPBroker(creds)
+        except MCPError as exc:
+            log.error("MCP transport unavailable: %s", exc)
+            log.error("install it with `uv tool install alpaca-mcp-server`, or set "
+                      "execution.transport: rest in config.yaml to use the REST client")
+            return 1
+
+    # Split the account before trading. Without this the equity side sizes
+    # against full equity while the options process does the same, and the two
+    # can commit past 100% with neither doing anything wrong by its own rules.
+    #
+    # Only applied when the allocator is enabled, so an existing deployment
+    # that runs equities alone behaves exactly as before.
+    budget = None
+    if config.execution.allocator == "dynamic":
+        probe = broker if broker is not None else Broker(creds)
+        account = probe.get_account()
+        level = probe.options_level() if hasattr(probe, "options_level") else None
+        alloc = allocation.decide(account.equity, options_level=level)
+        budget = alloc.equity_budget
+        log.info("ALLOCATION %s", alloc.summary())
+
+    trader = Trader(config, creds, dry_run=args.dry_run, broker=broker, budget=budget)
 
     if args.once:
         trader.run_cycle()

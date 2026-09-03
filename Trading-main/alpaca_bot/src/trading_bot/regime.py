@@ -74,3 +74,47 @@ def strategy_allows_regime(strategy_name: str, regime: str) -> bool:
     if allowed is None:
         return True
     return regime in allowed
+
+
+def detect_regime_series(
+    df: pd.DataFrame,
+    adx_period: int = 14,
+    ema_period: int = 50,
+    sideways_adx: float = 20.0,
+    trending_adx: float = 25.0,
+    slope_lookback: int = 5,
+) -> list[str]:
+    """`detect_regime` evaluated at every bar, in one pass.
+
+    Calling detect_regime on a growing slice is O(n^2) -- at 24k bars a backtest
+    spends minutes recomputing the same indicators. ADX and EMA are both causal
+    (each value depends only on bars up to itself), so computing them once over
+    the full series and reading position i gives the IDENTICAL value that
+    slicing to i and taking .iloc[-1] would. This is a speedup, not an
+    approximation; test_regime asserts the two agree bar for bar.
+
+    Returns one label per row, with SIDEWAYS for bars too early to judge --
+    matching detect_regime's own "not enough data to claim a trend" default.
+    """
+    n = len(df)
+    min_bars = max(adx_period, ema_period, slope_lookback) + 2
+    out = [SIDEWAYS] * n
+    if n < min_bars:
+        return out
+
+    adx_line = ind.adx(df, adx_period)
+    ema_line = ind.ema(df, ema_period)
+    close = df["close"]
+
+    for i in range(min_bars - 1, n):
+        adx_val = adx_line.iloc[i]
+        if pd.isna(adx_val) or adx_val < sideways_adx:
+            continue                      # already SIDEWAYS
+        ema_now = ema_line.iloc[i]
+        slope = ema_now - ema_line.iloc[i - slope_lookback]
+        price = close.iloc[i]
+        if adx_val > trending_adx and price > ema_now and slope > 0:
+            out[i] = BULL
+        elif adx_val > trending_adx and price < ema_now and slope < 0:
+            out[i] = BEAR
+    return out

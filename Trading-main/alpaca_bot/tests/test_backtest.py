@@ -36,7 +36,7 @@ def test_raises_when_not_enough_bars():
     strat = EmaRsiStrategy()
     df = make_df([100.0] * 5)
     with pytest.raises(ValueError, match="Need more than"):
-        run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min")
+        run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min", starting_equity=10_000.0)
 
 
 def test_long_only_strategy_never_opens_a_short():
@@ -49,7 +49,7 @@ def test_long_only_strategy_never_opens_a_short():
     rally = list(np.linspace(bounce[0], bounce[0] + 40, 30))
     df = make_df(up + decline + bounce + rally)
 
-    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min")
+    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min", starting_equity=10_000.0)
 
     assert all(t.side == "long" for t in result.trades)
     # Exactly one round trip: one oversold-reversal entry, one overbought exit.
@@ -64,7 +64,7 @@ def test_ema_rsi_produces_expected_r_multiple_round_trip():
     rally = list(np.linspace(bounce[0], bounce[0] + 40, 30))
     df = make_df(up + decline + bounce + rally)
 
-    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min")
+    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min", starting_equity=10_000.0)
 
     trade = result.trades[0]
     assert trade.side == "long"
@@ -86,7 +86,7 @@ def test_vwap_strategy_can_open_and_close_a_short():
     df = make_df(closes, start="2024-01-02 16:00")  # UTC 16:00 -> ~11:00 America/New_York
     strat = VwapMeanReversionStrategy()
 
-    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min")
+    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min", starting_equity=10_000.0)
 
     assert len(result.trades) == 1
     trade = result.trades[0]
@@ -104,7 +104,7 @@ def test_stop_loss_is_honoured_intrabar():
     crash = [bounce[0] - 50]  # blows through any reasonable stop
     df = make_df(up + decline + bounce + crash)
 
-    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min")
+    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min", starting_equity=10_000.0)
 
     assert len(result.trades) == 1
     trade = result.trades[0]
@@ -116,7 +116,7 @@ def test_stop_loss_is_honoured_intrabar():
 def test_equity_curve_is_monotonic_length_and_starts_at_min_bars():
     strat = EmaRsiStrategy()
     df = make_df(list(np.linspace(100, 130, 60)))
-    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min")
+    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min", starting_equity=10_000.0)
     assert len(result.equity_curve) == len(df) - strat.min_bars
     assert not result.equity_curve.isna().any()
 
@@ -124,7 +124,7 @@ def test_equity_curve_is_monotonic_length_and_starts_at_min_bars():
 def test_no_trades_still_returns_flat_result():
     strat = EmaRsiStrategy()
     df = make_df([100.0] * 60)  # flat prices, RSI/EMA never trigger anything
-    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min")
+    result = run_backtest(strat, df, "TEST", RiskConfig(), timeframe="1Min", starting_equity=10_000.0)
     assert result.trades == []
     assert result.final_equity == pytest.approx(result.starting_equity)
     assert result.total_return_pct == pytest.approx(0.0)

@@ -20,7 +20,7 @@ once and reads from it per bar to avoid O(n^2) recomputation over history.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import time
+from datetime import datetime, time, timedelta
 
 import pandas as pd
 
@@ -39,6 +39,20 @@ class Strategy(ABC):
     # (e.g. EmaRsiStrategy) must set this False, since for them SELL only
     # ever means "exit an existing long", never "open a short".
     allow_short: bool = True
+
+    def strength(self, df: pd.DataFrame) -> float:
+        """How strong THIS signal is, 0..1. Neutral by default.
+
+        Used only when position slots are scarce and something has to rank the
+        candidates -- see `scheduling.DeficitRoundRobin`. It is not a
+        probability and it is not comparable across strategies; it only has to
+        order one strategy's own signals sensibly against each other.
+
+        The neutral default is deliberate: a strategy with no meaningful notion
+        of conviction should say so and let the scheduler's fairness term
+        decide, rather than invent a number that looks like information.
+        """
+        return 0.5
 
     @abstractmethod
     def precompute(self, df: pd.DataFrame) -> dict:
@@ -347,11 +361,224 @@ class CryptoMomentumStrategy(Strategy):
         return entry_price + self.target_atr_mult * atr_val
 
 
+
+class OpeningRangeBreakoutStrategy(Strategy):
+    """Break of the first N minutes' range, volume-confirmed, stop at the range.
+
+    WHY THIS ONE
+
+    Opening Range Breakout is one of the few intraday equity patterns with a
+    published, replicated result rather than a folk reputation: Zarattini &
+    Aziz, "Can Day Trading Really Be Profitable?" (2023), tested a short opening
+    range on liquid US equities across two decades. The edge documented there is
+    not the breakout itself -- it is the combination of an early objective
+    level, a hard stop at the opposite side of that level, and no overnight
+    exposure.
+
+    WHY IT SUITS THIS BOT
+
+    The four strategies above all fire on indicator crossings, which on 1-minute
+    bars means often, and mostly on noise. Measured on this account's own data:
+    vwap_mean_reversion signalled on ~15% of bars, bollinger_squeeze on 0.2%,
+    and each showed negative expectancy over its first twenty trades before the
+    risk layer paused it.
+
+    ORB fires at most twice per symbol per day, at a level fixed before any
+    signal exists. Fewer decisions, each with a defined invalidation point, is
+    the structural difference -- not another oscillator.
+
+    THE RULES, AND WHY EACH IS THERE
+
+      range   high/low of the first `range_minutes` after the open, frozen once
+              the window closes. A level that keeps moving is not a level.
+      entry   a close beyond the range, in the direction of the break.
+      volume  the breaking bar must trade above its own recent average. An
+              unconfirmed break is the signature of a false one -- price pokes
+              through on nothing and reverts -- and it is the dominant ORB
+              failure mode, so a version without this filter bleeds.
+      once    one entry per side per day. Re-entering a level that already
+              failed is how one choppy session becomes ten losses.
+      cutoff  no new entries after `no_entry_after`: a breakout with twenty
+              minutes left cannot reach a sensible target.
+      stop    the opposite side of the range. Deliberately NOT an ATR multiple
+              -- the range is the thesis, so if price returns through it the
+              reason for the trade is gone. It also makes R the range width,
+              known at entry rather than inferred afterwards.
+      target  a multiple of that same R.
+
+    Both directions trade: a downside break is the same structure mirrored.
+
+    WHAT IS NOT CLAIMED: that it is profitable here. It is better specified than
+    the four above, on a timeframe it was designed for, and that is all that can
+    be said until it is backtested on this account's data.
+    """
+
+    """Break of the first N minutes' range, volume-confirmed, stop at the range."""
+
+    name = "opening_range_breakout"
+    min_bars = 30
+    allow_short = True
+
+    def __init__(
+        self,
+        range_minutes: int = 15,
+        volume_period: int = 20,
+        volume_mult: float = 1.2,
+        target_r: float = 2.0,
+        session_open: time = time(9, 30),
+        no_entry_after: time = time(15, 0),
+    ):
+        self.range_minutes = range_minutes
+        self.volume_period = volume_period
+        self.volume_mult = volume_mult
+        self.target_r = target_r
+        self.session_open = session_open
+        self.no_entry_after = no_entry_after
+        self.min_bars = max(range_minutes, volume_period) + 2
+
+    # -- helpers -------------------------------------------------------------
+
+    @staticmethod
+    def _local(ts: pd.Timestamp) -> pd.Timestamp:
+        return ts.tz_convert("America/New_York") if ts.tzinfo is not None else ts
+
+    def _ranges(self, df: pd.DataFrame) -> dict:
+        """Each session's opening range, keyed by local trading date.
+
+        Grouping on the LOCAL date is load-bearing: a UTC-day grouping splits
+        the US session across two buckets and yields a range that never existed.
+        """
+        local = [self._local(t) for t in df.index]
+        dates = pd.Series([t.date() for t in local], index=df.index)
+        times = pd.Series([t.time() for t in local], index=df.index)
+
+        out: dict = {}
+        for day, day_df in df.groupby(dates, sort=False):
+            day_times = times.loc[day_df.index]
+            end = (datetime.combine(day, self.session_open)
+                   + timedelta(minutes=self.range_minutes)).time()
+            window = day_df[(day_times >= self.session_open) & (day_times < end)]
+            if len(window) < 2:
+                continue          # holiday, half day, or missing bars
+            out[day] = (float(window["high"].max()), float(window["low"].min()), end)
+        return {"ranges": out, "dates": dates, "times": times}
+
+    # -- Strategy interface --------------------------------------------------
+
+    def precompute(self, df: pd.DataFrame) -> dict:
+        ctx = self._ranges(df)
+        ctx["vol_ma"] = ind.volume_ma(df, self.volume_period)
+        # One entry per side per day, tracked in the context rather than on
+        # self so a backtest and a live run can never contaminate each other.
+        ctx["taken"] = set()
+        return ctx
+
+    def evaluate(self, df: pd.DataFrame, ctx: dict, i: int) -> str:
+        day = ctx["dates"].iloc[i]
+        rng = ctx["ranges"].get(day)
+        if rng is None:
+            return HOLD
+        high, low, range_end = rng
+
+        now = ctx["times"].iloc[i]
+        if now < range_end:
+            return HOLD                    # range still forming
+        if now >= self.no_entry_after:
+            return HOLD                    # too late to reach a target
+
+        avg = ctx["vol_ma"].iloc[i]
+        if pd.isna(avg) or avg <= 0:
+            return HOLD
+        if float(df["volume"].iloc[i]) < float(avg) * self.volume_mult:
+            return HOLD                    # unconfirmed break
+
+        close = float(df["close"].iloc[i])
+        if close > high and (day, "long") not in ctx["taken"]:
+            ctx["taken"].add((day, "long"))
+            return BUY
+        if close < low and (day, "short") not in ctx["taken"]:
+            ctx["taken"].add((day, "short"))
+            return SELL
+        return HOLD
+
+    def _range_for_last_bar(self, df: pd.DataFrame) -> tuple[float, float] | None:
+        built = self._ranges(df)
+        day = self._local(df.index[-1]).date()
+        rng = built["ranges"].get(day)
+        return (rng[0], rng[1]) if rng else None
+
+    def strength(self, df: pd.DataFrame) -> float:
+        """Conviction from how decisively the range broke, and on what volume.
+
+        Two things separate a break worth taking from one that reverts, and
+        both are already measured here:
+
+          extension  how far beyond the level price closed, as a fraction of
+                     the range width. A close 40% of a range beyond it is a
+                     different event from one a tick past, and treating them
+                     alike is what makes a breakout strategy look random.
+          volume     the breaking bar's volume against its own recent average,
+                     which is the filter that already gates entry -- this reads
+                     the same number as a degree rather than a yes/no.
+
+        Multiplied, not averaged: a decisive break on no volume and a marginal
+        break on huge volume are both weak, and averaging would rate them
+        middling instead.
+        """
+        rng = self._range_for_last_bar(df)
+        if rng is None:
+            return 0.5
+        high, low = rng
+        width = high - low
+        if width <= 0:
+            return 0.5
+        close = float(df["close"].iloc[-1])
+        beyond = (close - high) if close > high else (low - close) if close < low else 0.0
+        extension = min(1.0, max(0.0, beyond / width))
+
+        avg = ind.volume_ma(df, self.volume_period).iloc[-1]
+        if pd.isna(avg) or avg <= 0:
+            confirmation = 0.5
+        else:
+            # 1x average -> 0.0, 3x -> 1.0. Above 3x adds nothing: past a point
+            # heavy volume stops being confirmation and starts being a crowd.
+            ratio = float(df["volume"].iloc[-1]) / float(avg)
+            confirmation = min(1.0, max(0.0, (ratio - 1.0) / 2.0))
+
+        # Floor at 0.05 so a qualifying signal never scores zero -- it passed
+        # every gate to get here, and zero would let the deficit alone rank it.
+        return max(0.05, extension * confirmation)
+
+    def get_stop_loss(self, entry_price: float, df: pd.DataFrame, side: str) -> float:
+        rng = self._range_for_last_bar(df)
+        if rng is None:
+            # No range formed. A fixed fraction rather than something that would
+            # silently disable the stop.
+            return entry_price * (0.99 if side == "long" else 1.01)
+        high, low = rng
+        stop = low if side == "long" else high
+        # A stop on the wrong side of entry is not a stop. Can happen when the
+        # break is evaluated on a bar that has already reverted through the
+        # range; fall back rather than submit an order Alpaca would reject.
+        if (side == "long" and stop >= entry_price) or (side == "short" and stop <= entry_price):
+            return entry_price * (0.99 if side == "long" else 1.01)
+        return stop
+
+    def get_take_profit(self, entry_price: float, df: pd.DataFrame, side: str) -> float:
+        stop = self.get_stop_loss(entry_price, df, side)
+        risk = abs(entry_price - stop)
+        if risk <= 0:
+            return entry_price * (1.01 if side == "long" else 0.99)
+        return (entry_price + self.target_r * risk if side == "long"
+                else entry_price - self.target_r * risk)
+
+
 REGISTRY: dict[str, type[Strategy]] = {
     EmaRsiStrategy.name: EmaRsiStrategy,
     VwapMeanReversionStrategy.name: VwapMeanReversionStrategy,
     BollingerSqueezeStrategy.name: BollingerSqueezeStrategy,
     CryptoMomentumStrategy.name: CryptoMomentumStrategy,
+    OpeningRangeBreakoutStrategy.name: OpeningRangeBreakoutStrategy,
 }
 
 

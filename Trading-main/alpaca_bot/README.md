@@ -15,14 +15,26 @@ TradingApp/
 ├─ src/trading_bot/
 │  ├─ config.py               loads .env + config.yaml into typed objects
 │  ├─ indicators.py           SMA/EMA/RSI/ATR/VWAP/Bollinger/MACD from scratch
-│  ├─ signals.py               Strategy interface + 3 strategies (see below)
+│  ├─ signals.py               Strategy interface + 5 strategies (see below)
 │  ├─ risk.py                  trade log, expectancy tracker, Kelly sizing, hard limits
 │  ├─ backtest.py               bar-by-bar backtest engine (Sharpe, drawdown, R-multiples)
 │  ├─ broker.py                all Alpaca order/account/position calls
 │  ├─ data.py                  historical bars + latest prices
 │  ├─ trader.py                 live loop: bars -> signal -> risk -> bracket order
 │  ├─ dashboard.py              terminal stats display
-│  └─ logger.py                 console + rotating file logs
+│  ├─ logger.py                 console + rotating file logs
+│  │
+│  │                            -- agent layer, all opt-in --
+│  ├─ mcp_broker.py             same account over Alpaca's MCP server
+│  ├─ attention.py              weighs every strategy's vote by regime fit
+│  ├─ learning.py               per-strategy reliability from closed trades
+│  ├─ retrieval.py              news + corporate actions for one ticker
+│  ├─ agent.py                  LLM review: confirm / shrink / veto only
+│  ├─ advisor_memory.py         scores the LLM's own past verdicts
+│  ├─ scheduling.py             allocates position slots when they are scarce
+│  ├─ allocation.py             splits capital between equities and options
+│  ├─ jsonl.py                  shared append-only storage for the above
+│  └─ options*.py               contracts, sizing and the options cycle
 ├─ scripts/
 │  ├─ check_connection.py      smoke-test keys, trading API, data API
 │  └─ backtest.py               CLI: backtest against real Alpaca history, save CSV+PNG
@@ -57,7 +69,7 @@ if you lose it, regenerate the pair.
 .venv\Scripts\python.exe run.py panic                       # cancel all, close all
 ```
 
-Run tests with `.venv\Scripts\python.exe -m pytest` (network-free, ~55 tests).
+Run tests with `.venv\Scripts\python.exe -m pytest` (network-free, 597 tests, no keys).
 
 ## Strategies (`signals.py`)
 
@@ -66,6 +78,8 @@ Run tests with `.venv\Scripts\python.exe -m pytest` (network-free, ~55 tests).
 | `ema_rsi` | Oversold RSI reversal, filtered by EMA20 uptrend; exits on RSI>70 | long only |
 | `vwap_mean_reversion` | Fade extreme moves away from intraday VWAP; mid-session only | long + short |
 | `bollinger_squeeze` | Volatility contraction (new 20-bar bandwidth low) then a volume-confirmed breakout | long + short |
+| `crypto_momentum` | Breakout momentum with a volatility filter, sized for crypto's fatter tails | long only |
+| `opening_range_breakout` | Break of the first 15 minutes' range, volume-confirmed, stop at the far side of the range | long + short |
 
 Every indicator (`indicators.py`) is causal — computed once over full history
 and read bar-by-bar — so the backtest doesn't recompute indicators from

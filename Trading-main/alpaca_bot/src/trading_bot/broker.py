@@ -77,11 +77,88 @@ class PositionSnapshot:
     side: str
 
 
-class Broker:
+class BrokerCapabilities:
+    """Cached yes/no facts about the account and its assets.
+
+    Shared by `Broker` and `MCPBroker` because both need exactly this and both
+    had their own copy -- which had already drifted: one guarded the payload
+    with isinstance and the other did not, so the same lookup failure produced
+    a different answer depending on the transport.
+
+    Two rules hold for everything here, and they are the reason it is worth
+    sharing rather than reimplementing:
+
+      cached        these are properties of an account or an asset, not of the
+                    market, and the entry path asks once per candidate per
+                    cycle across a thousand symbols.
+      False on
+      failure       a lookup that errors costs a trade. Answering True would
+                    submit an order the broker then rejects, which is worse:
+                    the rejection arrives after the strategy, the scheduler,
+                    the risk gates and the LLM have all spent work on it.
+
+    Subclasses supply only the two fetches.
+    """
+
+    def _init_capabilities(self) -> None:
+        self._fractionable_cache: dict[str, bool] = {}
+        self._shorting_enabled: bool | None = None
+
+    # -- supplied by the transport -------------------------------------------
+
+    def _fetch_shorting_enabled(self) -> bool:
+        raise NotImplementedError
+
+    def _fetch_fractionable(self, symbol: str) -> bool:
+        raise NotImplementedError
+
+    # -- the shared behaviour ------------------------------------------------
+
+    def shorting_enabled(self) -> bool:
+        """Whether this account may open short positions.
+
+        Asked rather than assumed: a paper account defaults to shorting
+        disabled, and a strategy with allow_short=True will otherwise generate
+        SELL signals all day that Alpaca refuses with a 403 at the last step --
+        after the strategy, scheduler, risk gates and LLM have all spent work
+        on them.
+        """
+        if self._shorting_enabled is None:
+            try:
+                self._shorting_enabled = bool(self._fetch_shorting_enabled())
+            except Exception as exc:  # noqa: BLE001
+                log.debug("shorting_enabled lookup failed: %s", exc)
+                return False
+        return self._shorting_enabled
+
+    def is_fractionable(self, symbol: str) -> bool:
+        """Whether Alpaca will accept a fractional quantity for this symbol."""
+        if is_crypto_symbol(symbol):
+            return True                     # crypto is always fractional
+        cached = self._fractionable_cache.get(symbol)
+        if cached is not None:
+            return cached
+        try:
+            result = bool(self._fetch_fractionable(symbol))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("fractionable lookup failed for %s: %s", symbol, exc)
+            result = False
+        self._fractionable_cache[symbol] = result
+        return result
+
+
+class Broker(BrokerCapabilities):
     """Buy/sell/inspect against Alpaca."""
+
+    def _fetch_shorting_enabled(self) -> bool:
+        return getattr(self._client.get_account(), "shorting_enabled", False)
+
+    def _fetch_fractionable(self, symbol: str) -> bool:
+        return getattr(self._client.get_asset(symbol), "fractionable", False)
 
     def __init__(self, creds: Credentials):
         self.paper = creds.paper
+        self._init_capabilities()
         self._client = TradingClient(
             api_key=creds.api_key,
             secret_key=creds.secret_key,
@@ -149,6 +226,47 @@ class Broker:
     def has_open_order(self, symbol: str) -> bool:
         return bool(self.get_open_orders(symbol))
 
+    def shorting_enabled(self) -> bool:
+        """Whether this account may open short positions.
+
+        Asked rather than assumed: a paper account defaults to shorting
+        disabled, and a strategy with allow_short=True will then generate SELL
+        signals all day that Alpaca refuses with a 403 at the very last step --
+        after the strategy, scheduler, risk gates and LLM have all approved
+        them. Cached because it is an account property, not a market one.
+        """
+        if self._shorting_enabled is None:
+            try:
+                self._shorting_enabled = bool(
+                    getattr(self._client.get_account(), "shorting_enabled", False))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("shorting_enabled lookup failed: %s", exc)
+                return False        # conservative: cost a trade, not a rejection
+        return self._shorting_enabled
+
+    def is_fractionable(self, symbol: str) -> bool:
+        """Whether Alpaca will accept a fractional quantity for this symbol.
+
+        Cached for the process lifetime: the answer is a property of the asset,
+        not of the market, and this is called once per candidate per cycle
+        across a thousand symbols. Crypto is always fractional. On any lookup
+        failure the answer is False, which costs a trade rather than risking a
+        rejected order -- the conservative direction.
+        """
+        if is_crypto_symbol(symbol):
+            return True
+        cached = self._fractionable_cache.get(symbol)
+        if cached is not None:
+            return cached
+        try:
+            asset = self._client.get_asset(symbol)
+            result = bool(getattr(asset, "fractionable", False))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("fractionable lookup failed for %s: %s", symbol, exc)
+            result = False
+        self._fractionable_cache[symbol] = result
+        return result
+
     def submit_order(
         self,
         symbol: str,
@@ -184,11 +302,17 @@ class Broker:
             "time_in_force": tif,
         }
 
-        if crypto and (take_profit_price or stop_loss_price):
+        # A fractional quantity carries the same restriction crypto does: Alpaca
+        # rejects any advanced order_class on it, so the bracket cannot be
+        # attached. Detected from the quantity itself rather than from an asset
+        # lookup, because that is the thing Alpaca actually validates and it
+        # costs no extra API call.
+        fractional = not crypto and float(qty) != int(float(qty))
+        if (crypto or fractional) and (take_profit_price or stop_loss_price):
             log.warning(
-                "%s is crypto - Alpaca doesn't support bracket orders for it; "
-                "submitting a plain order. Stop/target must be watched manually.",
-                symbol,
+                "%s: Alpaca rejects bracket orders for %s; submitting a plain "
+                "order. Stop/target are watched in-process instead.",
+                symbol, "crypto" if crypto else f"fractional qty {qty}",
             )
         elif take_profit_price or stop_loss_price:
             # Bracket orders require GTC or DAY and cannot be used to close out
