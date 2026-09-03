@@ -1,0 +1,264 @@
+@import "tailwindcss";
+
+/* ============================================================
+   THEME TOKENS — single source of truth.
+   Tailwind v4's @theme block emits real CSS custom properties
+   (--color-bg, --color-fg, etc.) in addition to bg-*/text-*/
+   border-* utilities. Every color reference in this file and in
+   component inline styles reads from these — there is no second,
+   parallel token set to drift out of sync with this one.
+   ============================================================ */
+@theme {
+  --color-bg: #000000;
+  --color-surface: #0a0a0a;
+  --color-surface-raised: #0f140f;
+  --color-border: #1f2b1f;
+  --color-fg: #d6ffd6;
+  --color-muted: #8fc79a;
+  --color-green: #39ff6a;
+  --color-red: #ff3b3b;
+  --color-accent: #39ff6a;
+  --color-danger: #ff3b3b;
+
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'Space Mono', 'Courier New', monospace;
+  --font-display: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  border-radius: 0;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-display);
+}
+
+::selection {
+  background-color: rgba(57, 255, 106, 0.25);
+  color: var(--color-fg);
+}
+
+/* Thin, dark scrollbars so overflowed tables/charts don't look broken */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  line-height: 1.4;
+}
+
+.h1 {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.h2 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+/* ============================================================
+   CARD — the one card chrome every widget shares. Header row +
+   body, consistent border/padding, a slot for a demo badge and
+   an optional right-aligned header action.
+   ============================================================ */
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  padding: 18px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+}
+
+.card-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Grid/flex children need min-width: 0 explicitly — without it, a wide
+   table or chart inside a track forces the whole grid to widen instead of
+   scrolling inside its own card. This is what caused the positions table
+   to bleed into the equity curve card. */
+.grid-shrink {
+  min-width: 0;
+}
+
+/* --- KPI strip (Account Summary) --- */
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px 24px;
+}
+
+@media (min-width: 768px) {
+  .kpi-strip {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.kpi-label {
+  color: var(--color-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.kpi-value {
+  font-family: var(--font-mono);
+  font-size: 19px;
+  line-height: 1.2;
+}
+
+/* --- Data table --- */
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table {
+  width: 100%;
+  min-width: 520px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-collapse: collapse;
+}
+
+.table th {
+  text-align: right;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.table td {
+  text-align: right;
+  border-bottom: 1px solid var(--color-border);
+  padding: 8px 10px;
+  white-space: nowrap;
+  color: var(--color-fg);
+}
+
+.table tbody tr:hover td {
+  background-color: var(--color-surface-raised);
+}
+
+.table th:first-child,
+.table td:first-child {
+  text-align: left;
+}
+
+/* --- Positive / negative values (gains vs losses) --- */
+.positive {
+  color: var(--color-green);
+}
+
+.negative {
+  color: var(--color-red);
+}
+
+/* --- Status indicators (BUY / SELL / HOLD, connection pill) --- */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  border: 1px solid;
+}
+
+.status-indicator.buy {
+  color: var(--color-green);
+  border-color: var(--color-green);
+  background-color: rgba(57, 255, 106, 0.08);
+}
+
+.status-indicator.sell {
+  color: var(--color-red);
+  border-color: var(--color-red);
+  background-color: rgba(255, 59, 59, 0.08);
+}
+
+.status-indicator.neutral {
+  color: var(--color-muted);
+  border-color: var(--color-border);
+}
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+
+/* --- Dividers --- */
+.divider {
+  border-top: 1px solid var(--color-border);
+  margin: 16px 0;
+}
+
+/* --- Demo data badge --- */
+.demo-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  color: var(--color-red);
+  border: 1px solid var(--color-red);
+  background-color: rgba(255, 59, 59, 0.1);
+  white-space: nowrap;
+}
+
+/* --- Focus states --- */
+*:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-green);
+}
